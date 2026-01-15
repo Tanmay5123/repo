@@ -41,8 +41,20 @@ supplier_risk = {"China": 0.65, "India": 0.35, "Taiwan": 0.20}
 supplier_capacity = {"China": 900, "India": 750, "Taiwan": 500}
 
 service_target = {"Standard Bike": 0.95, "Premium E-Bike": 0.98}
-
 SHORTAGE_PENALTY = 1200
+
+# =====================================================
+# SOLVER AUTO-DETECTION (CRITICAL FIX)
+# =====================================================
+def get_available_solver():
+    for solver_name in ["cbc", "highs", "glpk"]:
+        try:
+            solver = SolverFactory(solver_name)
+            if solver.available():
+                return solver_name
+        except:
+            continue
+    return None
 
 # =====================================================
 # SIDEBAR – CONTROLS
@@ -61,7 +73,7 @@ with st.sidebar:
     run_clicked = st.button("▶ Run Optimization")
 
 # =====================================================
-# OPTIMIZATION FUNCTION (SAFE, REBUILT EACH RUN)
+# OPTIMIZATION FUNCTION (SAFE)
 # =====================================================
 def run_optimization(scenario, demand_volatility, logistics_inflation):
 
@@ -72,6 +84,10 @@ def run_optimization(scenario, demand_volatility, logistics_inflation):
         "Max Resilience": (9, 4)
     }
     risk_w, lt_w = weights[scenario]
+
+    solver_name = get_available_solver()
+    if solver_name is None:
+        return {"error": "No MILP solver available in this environment."}
 
     model = ConcreteModel()
     model.S = SKUS
@@ -115,26 +131,28 @@ def run_optimization(scenario, demand_volatility, logistics_inflation):
             sum(m.x[s, p, t] for s in SKUS) <= supplier_capacity[p]
     )
 
-    solver = SolverFactory("glpk")
-    result = solver.solve(model)
+    solver = SolverFactory(solver_name)
+    result = solver.solve(model, tee=False)
 
     if result.solver.termination_condition != TerminationCondition.optimal:
-        return None
+        return {"error": f"Solver failed: {result.solver.termination_condition}"}
 
     total_cost = value(model.obj)
-    total_vol = sum(model.x[s, p, t].value for s in SKUS for p in SUPPLIERS for t in TIME)
+    total_volume = sum(
+        model.x[s, p, t].value for s in SKUS for p in SUPPLIERS for t in TIME
+    )
 
-    avg_lt = sum(
+    avg_lead_time = sum(
         model.x[s, p, t].value * supplier_leadtime[p]
         for s in SKUS for p in SUPPLIERS for t in TIME
-    ) / max(1, total_vol)
+    ) / max(1, total_volume)
 
-    service_lvl = 1 - (
+    service_level = 1 - (
         sum(model.shortage[s, t].value for s in SKUS for t in TIME)
         / sum(sku_demand.values())
     )
 
-    risk_exp = sum(
+    risk_exposure = sum(
         model.x[s, p, t].value * supplier_risk[p]
         for s in SKUS for p in SUPPLIERS for t in TIME
     )
@@ -142,9 +160,9 @@ def run_optimization(scenario, demand_volatility, logistics_inflation):
     return {
         "Scenario": scenario,
         "Cost ($M)": total_cost / 1e6,
-        "Avg Lead Time (Days)": avg_lt,
-        "Service Level (%)": service_lvl * 100,
-        "Risk Exposure": risk_exp
+        "Avg Lead Time (Days)": avg_lead_time,
+        "Service Level (%)": service_level * 100,
+        "Risk Exposure": risk_exposure
     }
 
 # =====================================================
@@ -154,10 +172,11 @@ if run_clicked:
     with st.spinner("Running optimization engine..."):
         result = run_optimization(scenario, demand_volatility, logistics_inflation)
 
-        if result is None:
+        if "error" in result:
             st.error(
-                "❌ Scenario infeasible under current conditions.\n\n"
-                "Try reducing volatility or switching optimization goal."
+                f"❌ Optimization Engine Unavailable\n\n"
+                f"{result['error']}\n\n"
+                "For full optimization demos, run locally or on Hugging Face Spaces."
             )
             st.stop()
 
@@ -179,7 +198,7 @@ if st.session_state.history:
     st.divider()
 
 # =====================================================
-# SCENARIO HISTORY – GRAPHICAL VS BASELINE
+# SCENARIO HISTORY (GRAPHICAL)
 # =====================================================
 if len(st.session_state.history) >= 2:
     st.subheader("🟩 Scenario Comparison vs Baseline")
@@ -196,7 +215,7 @@ if len(st.session_state.history) >= 2:
     st.plotly_chart(fig, use_container_width=True)
 
 # =====================================================
-# COST STRUCTURE ANALYSIS (EXEC VIEW)
+# COST STRUCTURE ANALYSIS
 # =====================================================
 if st.session_state.history:
     st.subheader("🟨 Cost Structure Analysis")
@@ -233,7 +252,6 @@ sankey = go.Figure(go.Sankey(
         value=[50, 45, 40]
     )
 ))
-
 st.plotly_chart(sankey, use_container_width=True)
 
 # =====================================================
@@ -243,3 +261,4 @@ st.subheader("🟥 Resilience Test Summary")
 st.write(f"📈 Demand Volatility Applied: **{demand_volatility}%**")
 st.write(f"⛽ Logistics Inflation Applied: **{logistics_inflation}%**")
 st.success("Optimization completed successfully under simulated market stress.")
+
