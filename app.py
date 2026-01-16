@@ -8,86 +8,87 @@ from pyomo.environ import *
 # PAGE CONFIG
 # =====================================================
 st.set_page_config(
-    page_title="Global Supply Chain – Decision Intelligence",
+    page_title="Supply Chain Decision Intelligence",
     layout="wide"
 )
 
-st.title("🌍 Global Supply Chain Decision Intelligence")
-st.caption("Optimize • Simulate • Compare • Build Resilience")
+st.title("🌍 Supply Chain Decision Intelligence")
+st.caption("Executive Optimization • Network Flow • Resilience")
 
 # =====================================================
 # SESSION STATE
 # =====================================================
 if "history" not in st.session_state:
     st.session_state.history = []
+if "baseline" not in st.session_state:
+    st.session_state.baseline = None
 
 # =====================================================
-# MASTER DATA (REALISTIC DEMO DATA)
+# REALISTIC MASTER DATA
 # =====================================================
-SKUS = ["Standard Bike", "Premium E-Bike"]
+SKUS = ["Standard Bicycle", "Premium E-Bike"]
 SUPPLIERS = ["China", "India", "Taiwan"]
 TIME = ["W1", "W2", "W3", "W4"]
 
 sku_demand = {
-    ("Standard Bike", "W1"): 400, ("Standard Bike", "W2"): 420,
-    ("Standard Bike", "W3"): 380, ("Standard Bike", "W4"): 450,
-    ("Premium E-Bike", "W1"): 180, ("Premium E-Bike", "W2"): 200,
-    ("Premium E-Bike", "W3"): 190, ("Premium E-Bike", "W4"): 210,
+    ("Standard Bicycle", "W1"): 4200, ("Standard Bicycle", "W2"): 4500,
+    ("Standard Bicycle", "W3"): 4000, ("Standard Bicycle", "W4"): 4800,
+    ("Premium E-Bike", "W1"): 1800, ("Premium E-Bike", "W2"): 2000,
+    ("Premium E-Bike", "W3"): 1900, ("Premium E-Bike", "W4"): 2100,
 }
 
-supplier_cost = {"China": 185, "India": 210, "Taiwan": 255}
+supplier_cost = {"China": 185, "India": 215, "Taiwan": 265}
 supplier_leadtime = {"China": 38, "India": 26, "Taiwan": 14}
-supplier_risk = {"China": 0.65, "India": 0.35, "Taiwan": 0.20}
-supplier_capacity = {"China": 900, "India": 750, "Taiwan": 500}
+supplier_risk = {"China": 0.75, "India": 0.40, "Taiwan": 0.20}
+supplier_capacity = {"China": 9000, "India": 7000, "Taiwan": 4500}
 
-service_target = {"Standard Bike": 0.95, "Premium E-Bike": 0.98}
-SHORTAGE_PENALTY = 1200
+service_target = {"Standard Bicycle": 0.95, "Premium E-Bike": 0.98}
+SHORTAGE_PENALTY = 2500
 
 # =====================================================
-# SOLVER AUTO-DETECTION (CRITICAL FIX)
+# SOLVER AUTO-DETECTION
 # =====================================================
 def get_available_solver():
-    for solver_name in ["cbc", "highs", "glpk"]:
+    for name in ["cbc", "highs", "glpk"]:
         try:
-            solver = SolverFactory(solver_name)
-            if solver.available():
-                return solver_name
+            s = SolverFactory(name)
+            if s.available():
+                return name
         except:
             continue
     return None
 
 # =====================================================
-# SIDEBAR – CONTROLS
+# SIDEBAR CONTROLS
 # =====================================================
 with st.sidebar:
     st.header("Optimization Controls")
 
     scenario = st.selectbox(
-        "Optimization Goal",
+        "Optimization Objective",
         ["Baseline", "Min Cost", "Speed to Market", "Max Resilience"]
     )
 
-    demand_volatility = st.slider("Demand Volatility (%)", -15, 30, 0)
-    logistics_inflation = st.slider("Logistics / Fuel Inflation (%)", 0, 25, 0)
+    demand_volatility = st.slider("Demand Volatility (%)", -10, 30, 0)
+    logistics_inflation = st.slider("Logistics Inflation (%)", 0, 25, 0)
 
     run_clicked = st.button("▶ Run Optimization")
 
 # =====================================================
-# OPTIMIZATION FUNCTION (SAFE)
+# OPTIMIZATION ENGINE
 # =====================================================
-def run_optimization(scenario, demand_volatility, logistics_inflation):
-
+def run_optimization():
     weights = {
         "Baseline": (4, 3),
         "Min Cost": (1, 0),
-        "Speed to Market": (2, 7),
-        "Max Resilience": (9, 4)
+        "Speed to Market": (2, 8),
+        "Max Resilience": (10, 4)
     }
     risk_w, lt_w = weights[scenario]
 
     solver_name = get_available_solver()
     if solver_name is None:
-        return {"error": "No MILP solver available in this environment."}
+        return {"error": "No MILP solver available."}
 
     model = ConcreteModel()
     model.S = SKUS
@@ -102,7 +103,7 @@ def run_optimization(scenario, demand_volatility, logistics_inflation):
             model.x[s, p, t] *
             (
                 supplier_cost[p] * (1 + logistics_inflation / 100)
-                + risk_w * supplier_risk[p]
+                + risk_w * supplier_risk[p] * 100
                 + lt_w * supplier_leadtime[p]
             )
             for s in SKUS for p in SUPPLIERS for t in TIME
@@ -135,130 +136,165 @@ def run_optimization(scenario, demand_volatility, logistics_inflation):
     result = solver.solve(model, tee=False)
 
     if result.solver.termination_condition != TerminationCondition.optimal:
-        return {"error": f"Solver failed: {result.solver.termination_condition}"}
+        return {"error": "Optimization infeasible"}
 
-    total_cost = value(model.obj)
-    total_volume = sum(
-        model.x[s, p, t].value for s in SKUS for p in SUPPLIERS for t in TIME
-    )
+    total_units = sum(model.x[s, p, t].value for s in SKUS for p in SUPPLIERS for t in TIME)
 
-    avg_lead_time = sum(
-        model.x[s, p, t].value * supplier_leadtime[p]
-        for s in SKUS for p in SUPPLIERS for t in TIME
-    ) / max(1, total_volume)
-
-    service_level = 1 - (
-        sum(model.shortage[s, t].value for s in SKUS for t in TIME)
-        / sum(sku_demand.values())
-    )
-
-    risk_exposure = sum(
-        model.x[s, p, t].value * supplier_risk[p]
-        for s in SKUS for p in SUPPLIERS for t in TIME
-    )
+    supplier_volume = {
+        p: sum(model.x[s, p, t].value for s in SKUS for t in TIME)
+        for p in SUPPLIERS
+    }
 
     return {
         "Scenario": scenario,
-        "Cost ($M)": total_cost / 1e6,
-        "Avg Lead Time (Days)": avg_lead_time,
-        "Service Level (%)": service_level * 100,
-        "Risk Exposure": risk_exposure
+        "Total Cost": value(model.obj) / 1e6,
+        "Service Level": 100 * (
+            1 - sum(model.shortage[s, t].value for s in SKUS for t in TIME)
+            / sum(sku_demand.values())
+        ),
+        "Risk Exposure": sum(
+            model.x[s, p, t].value * supplier_risk[p]
+            for s in SKUS for p in SUPPLIERS for t in TIME
+        ) / total_units * 100,
+        "Volumes": supplier_volume
     }
 
 # =====================================================
-# RUN OPTIMIZATION
+# RUN
 # =====================================================
 if run_clicked:
-    with st.spinner("Running optimization engine..."):
-        result = run_optimization(scenario, demand_volatility, logistics_inflation)
-
+    with st.spinner("Optimizing supply chain network..."):
+        result = run_optimization()
         if "error" in result:
-            st.error(
-                f"❌ Optimization Engine Unavailable\n\n"
-                f"{result['error']}\n\n"
-                "For full optimization demos, run locally or on Hugging Face Spaces."
-            )
+            st.error(result["error"])
             st.stop()
 
+        if st.session_state.baseline is None:
+            st.session_state.baseline = result
+
         st.session_state.history.append(result)
+
+# =====================================================
+# KPI DELTA FUNCTION
+# =====================================================
+def delta(curr, base, invert=False):
+    diff = curr - base
+    arrow = "↑" if diff > 0 else "↓"
+    if invert:
+        arrow = "↓" if diff > 0 else "↑"
+    return f"{arrow} {abs(diff):.1f}"
 
 # =====================================================
 # EXECUTIVE OVERVIEW
 # =====================================================
 if st.session_state.history:
     latest = st.session_state.history[-1]
+    base = st.session_state.baseline
 
     st.subheader("🟦 Executive Overview")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Total Cost ($M)", f"{latest['Cost ($M)']:.2f}")
-    c2.metric("Avg Lead Time", f"{latest['Avg Lead Time (Days)']:.1f} days")
-    c3.metric("Service Level", f"{latest['Service Level (%)']:.1f}%")
-    c4.metric("Risk Exposure", f"{latest['Risk Exposure']:.0f}")
 
-    st.divider()
+    c1, c2, c3 = st.columns(3)
 
-# =====================================================
-# SCENARIO HISTORY (GRAPHICAL)
-# =====================================================
-if len(st.session_state.history) >= 2:
-    st.subheader("🟩 Scenario Comparison vs Baseline")
-
-    hist_df = pd.DataFrame(st.session_state.history)
-
-    fig = px.bar(
-        hist_df,
-        x="Scenario",
-        y=["Cost ($M)", "Avg Lead Time (Days)", "Risk Exposure"],
-        barmode="group",
-        title="Scenario Impact Comparison"
+    c1.metric(
+        "Total Supply Chain Cost ($M)",
+        f"{latest['Total Cost']:.1f}",
+        delta(latest["Total Cost"], base["Total Cost"], invert=True)
     )
-    st.plotly_chart(fig, use_container_width=True)
+
+    c2.metric(
+        "Service Level (%)",
+        f"{latest['Service Level']:.1f}",
+        delta(latest["Service Level"], base["Service Level"])
+    )
+
+    c3.metric(
+        "Risk Exposure (Index)",
+        f"{latest['Risk Exposure']:.0f}",
+        delta(latest["Risk Exposure"], base["Risk Exposure"], invert=True)
+    )
 
 # =====================================================
-# COST STRUCTURE ANALYSIS
+# COMPACT COST STRUCTURE
 # =====================================================
 if st.session_state.history:
-    st.subheader("🟨 Cost Structure Analysis")
+    st.subheader("🟨 Cost Structure")
 
     cost_df = pd.DataFrame({
-        "Component": ["Procurement", "Risk Premium", "Lead Time Premium", "Service Loss"],
+        "Component": ["Procurement", "Logistics", "Risk", "Service Loss"],
         "Cost ($M)": [
-            latest["Cost ($M)"] * 0.55,
-            latest["Cost ($M)"] * 0.15,
-            latest["Cost ($M)"] * 0.20,
-            latest["Cost ($M)"] * 0.10
+            latest["Total Cost"] * 0.55,
+            latest["Total Cost"] * 0.20,
+            latest["Total Cost"] * 0.15,
+            latest["Total Cost"] * 0.10
         ]
     })
 
-    st.plotly_chart(
-        px.bar(cost_df, x="Component", y="Cost ($M)", title="Cost Breakdown"),
-        use_container_width=True
+    fig_cost = px.bar(
+        cost_df,
+        x="Component",
+        y="Cost ($M)",
+        title="Cost Breakdown",
+        text_auto=".1f"
     )
+    st.plotly_chart(fig_cost, use_container_width=True)
 
 # =====================================================
-# E2E SUPPLY CHAIN NETWORK FLOW (SANKEY)
+# SCENARIO HISTORY (GRAPH)
 # =====================================================
-st.subheader("🟧 End-to-End Supply Chain Network Flow")
+if len(st.session_state.history) > 1:
+    st.subheader("🟩 Scenario History")
 
-sankey = go.Figure(go.Sankey(
-    node=dict(
-        pad=15,
-        thickness=20,
-        label=["Suppliers (Asia)", "Assembly (India)", "EU DC", "Retailers"]
-    ),
-    link=dict(
-        source=[0, 1, 2],
-        target=[1, 2, 3],
-        value=[50, 45, 40]
+    hist_df = pd.DataFrame(st.session_state.history)
+
+    fig_hist = px.line(
+        hist_df,
+        x="Scenario",
+        y=["Total Cost", "Service Level", "Risk Exposure"],
+        markers=True
     )
-))
-st.plotly_chart(sankey, use_container_width=True)
+    st.plotly_chart(fig_hist, use_container_width=True)
 
 # =====================================================
-# RESILIENCE TEST SUMMARY
+# ANIMATED SANKEY NETWORK FLOW
 # =====================================================
-st.subheader("🟥 Resilience Test Summary")
-st.write(f"📈 Demand Volatility Applied: **{demand_volatility}%**")
-st.write(f"⛽ Logistics Inflation Applied: **{logistics_inflation}%**")
-st.success("Optimization completed successfully under simulated market stress.")
+st.subheader("🟧 Supply Chain Network Flow")
 
+if st.session_state.history:
+    vol = latest["Volumes"]
+
+    fig_sankey = go.Figure(go.Sankey(
+        arrangement="snap",
+        node=dict(
+            pad=15,
+            thickness=18,
+            label=[
+                "China Supplier",
+                "India Supplier",
+                "Taiwan Supplier",
+                "Assembly Plant",
+                "EU DC",
+                "Retailers"
+            ]
+        ),
+        link=dict(
+            source=[0, 1, 2, 3, 4],
+            target=[3, 3, 3, 4, 5],
+            value=[
+                vol["China"],
+                vol["India"],
+                vol["Taiwan"],
+                sum(vol.values()),
+                sum(vol.values())
+            ]
+        )
+    ))
+
+    st.plotly_chart(fig_sankey, use_container_width=True)
+
+# =====================================================
+# RESILIENCE SUMMARY
+# =====================================================
+st.subheader("🟥 Resilience Summary")
+st.write(f"Demand volatility applied: **{demand_volatility}%**")
+st.write(f"Logistics inflation applied: **{logistics_inflation}%**")
+st.success("Network optimized successfully under simulated stress.")
